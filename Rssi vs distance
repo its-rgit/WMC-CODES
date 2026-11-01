@@ -1,0 +1,166 @@
+import csv
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+
+F_MHZ = 2400.0
+D0 = 1.0
+
+SAMPLE_CSV = """Distance_m,RSSI1_dBm,RSSI2_dBm
+1,-35,-37
+2,-42,-40
+5,-55,-53
+10,-65,-67
+15,-72,-70
+20,-78,-76
+"""
+
+def load_readings(fname="rssi_distance.csv"):
+    if not os.path.exists(fname):
+        with open(fname, "w") as f:
+            f.write(SAMPLE_CSV)
+    dists, all_readings = [], []
+    with open(fname) as f:
+        for row in csv.reader(f):
+            if not row or row[0].startswith("Distance"):
+                continue
+            dists.append(float(row[0]))
+            all_readings.append(
+                [float(v) for v in row[1:] if v.strip()]
+            )
+    return np.array(dists), all_readings
+
+def average_readings(all_readings):
+    means = np.array([np.mean(r) for r in all_readings])
+    spreads = np.array([np.std(r) for r in all_readings])
+    return means, spreads
+
+def fspl_db(d, f_mhz=F_MHZ):
+    return (
+        20 * np.log10(d)
+        + 20 * np.log10(f_mhz)
+        - 27.55
+    )
+
+def free_space_prediction(d, rssi_at_d0):
+    return rssi_at_d0 - 20 * np.log10(d / D0)
+
+def fit_path_loss_exponent(dists, rssi_means):
+    x = 10 * np.log10(dists / D0)
+    slope, intercept = np.polyfit(x, rssi_means, 1)
+    n = -slope
+    residuals = rssi_means - (slope * x + intercept)
+    sigma = float(np.std(residuals))
+    return n, intercept, sigma
+
+def classify_environment(n):
+    if n < 2.2:
+        return "Free-space-like (open, unobstructed)"
+    if n < 3.0:
+        return "Lightly obstructed indoor / open corridor"
+    if n < 4.0:
+        return "Typical indoor with walls and furniture"
+    return "Heavily obstructed indoor (many walls / floors)"
+
+def print_table(dists, all_readings, means, theory, fitted):
+    print("\nDistance | RSSI readings | Average | Free-space | Fitted")
+    print("-" * 70)
+    for d, readings, mean, th, fit in zip(
+        dists, all_readings, means, theory, fitted
+    ):
+        print(
+            f"{d:8.1f} | {str(readings):13s} | "
+            f"{mean:7.2f} | {th:10.2f} | {fit:7.2f}"
+        )
+
+def plot_rssi_vs_distance(
+    dists, means, spreads, n, rssi_d0,
+    fname="rssi_vs_distance.png"
+):
+    d_smooth = np.linspace(dists.min(), dists.max(), 300)
+    theory = free_space_prediction(d_smooth, means[0])
+    fitted = rssi_d0 - 10 * n * np.log10(d_smooth / D0)
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    ax.errorbar(
+        dists, means, yerr=spreads, fmt="o",
+        capsize=4, markersize=7,
+        label="Measured (average ± spread)"
+    )
+    ax.plot(
+        d_smooth, theory, "--", lw=2,
+        label="Free space, n = 2"
+    )
+    ax.plot(
+        d_smooth, fitted, "-", lw=2,
+        label=f"Fitted log-distance model, n = {n:.2f}"
+    )
+    ax.set_xlabel("Distance from router (m)")
+    ax.set_ylabel("RSSI (dBm)")
+    ax.set_title("Signal Strength vs Distance")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(fname, dpi=150)
+    return fig
+
+def plot_semilog(
+    dists, means, spreads, n, rssi_d0,
+    fname="rssi_vs_log_distance.png"
+):
+    d_smooth = np.linspace(dists.min(), dists.max(), 300)
+    fitted = rssi_d0 - 10 * n * np.log10(d_smooth / D0)
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    ax.errorbar(
+        dists, means, yerr=spreads, fmt="o",
+        capsize=4, markersize=7,
+        label="Measured (average ± spread)"
+    )
+    ax.plot(
+        d_smooth, fitted, "-", lw=2,
+        label=f"Fitted line, slope = {-10*n:.1f} dB/decade"
+    )
+    ax.set_xscale("log")
+    ax.set_xticks(dists)
+    ax.set_xticklabels([f"{d:g}" for d in dists])
+    ax.set_xlabel("Distance from router (m) - log scale")
+    ax.set_ylabel("RSSI (dBm)")
+    ax.set_title("RSSI vs Log-Distance")
+    ax.grid(alpha=0.3, which="both")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(fname, dpi=150)
+    return fig
+
+if __name__ == "__main__":
+    dists, all_readings = load_readings()
+    means, spreads = average_readings(all_readings)
+
+    theory = free_space_prediction(dists, means[0])
+    n, intercept, sigma = fit_path_loss_exponent(dists, means)
+    fitted = intercept - 10 * n * np.log10(dists / D0)
+
+    print("\n=== RSSI vs Distance Survey ===")
+    print_table(dists, all_readings, means, theory, fitted)
+
+    print(f"\nAbsolute FSPL at 1 m: {fspl_db(1.0):.1f} dB")
+    print(f"Fitted path loss exponent n = {n:.2f}")
+    print(f"Shadowing spread sigma = {sigma:.2f} dB")
+    print(f"Environment: {classify_environment(n)}")
+    print(
+        f"Loss when distance doubles: "
+        f"{10 * n * np.log10(2):.1f} dB "
+        f"(free space: 6.0 dB)"
+    )
+
+    plot_rssi_vs_distance(
+        dists, means, spreads, n, intercept
+    )
+    plot_semilog(
+        dists, means, spreads, n, intercept
+    )
+
+    print("\nSaved: rssi_vs_distance.png")
+    print("Saved: rssi_vs_log_distance.png")
+    plt.show()
