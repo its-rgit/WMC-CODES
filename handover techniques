@@ -1,0 +1,350 @@
+# HANDOVER BEHAVIOUR ANALYSIS WHILE MOVING
+# Full Google Colab / Python code
+
+import csv
+from collections import OrderedDict
+
+import numpy as np
+import matplotlib.pyplot as plt
+from IPython.display import display, HTML
+
+# MAKE COLAB OUTPUT AREA LARGE
+display(HTML("""
+<style>
+.output_area { max-height: none !important; }
+.output_scroll { height: auto !important; max-height: none !important; }
+.output_subarea { max-width: 100% !important; }
+.cell { max-width: 100% !important; }
+.jp-OutputArea-output { max-height: none !important; }
+</style>
+"""))
+
+# SETTINGS
+HYSTERESIS_DB = 3.0
+PING_PONG_WINDOW_S = 20.0
+
+# CSV DATA
+CSV_DATA = """Time_s,ServingCellID,ServingRSRP_dBm,NeighborCellID,NeighborRSRP_dBm
+0,12345,-82,67890,-90
+5,12345,-72,67890,-101
+10,12345,-78,67890,-96
+15,12345,-81,67890,-92
+20,12345,-85,67890,-88
+25,67890,-83,12345,-91
+30,67890,-86,12345,-88
+35,12345,-87,67890,-89
+40,67890,-85,12345,-99
+45,67890,-80,12345,-95
+50,67890,-78,54321,-99
+55,67890,-83,54321,-90
+60,67890,-88,54321,-85
+65,54321,-82,67890,-92
+70,54321,-77,67890,-97
+75,12345,-82,67890,-90
+80,12345,-86,67890,-87
+"""
+
+# CREATE CSV FILE
+csv_file = "handover_log.csv"
+with open(csv_file, "w", newline="") as file:
+    file.write(CSV_DATA)
+
+print("CSV file created successfully:")
+print(csv_file)
+
+# LOAD CSV
+def load_log(filename):
+    rows = []
+    with open(filename, "r", newline="") as file:
+        reader = csv.reader(file)
+        for row in reader:
+            if not row:
+                continue
+            if row[0].strip() == "Time_s":
+                continue
+
+            rows.append({
+                "t": float(row[0]),
+                "cell": row[1].strip(),
+                "rsrp": float(row[2]),
+                "ncell": row[3].strip(),
+                "nrsrp": float(row[4])
+            })
+
+    return sorted(rows, key=lambda x: x["t"])
+
+# DETECT HANDOVERS
+def detect_handovers(rows):
+    events = []
+
+    for previous, current in zip(rows, rows[1:]):
+        # Check whether the serving cell changed
+        if previous["cell"] == current["cell"]:
+            continue
+
+        margin = np.nan
+
+        # Calculate neighbour-to-serving RSRP margin
+        if (previous["ncell"] == current["cell"]
+                and not np.isnan(previous["nrsrp"])):
+            margin = previous["nrsrp"] - previous["rsrp"]
+
+        events.append({
+            "time": current["t"],
+            "from": previous["cell"],
+            "to": current["cell"],
+            "before": previous["rsrp"],
+            "after": current["rsrp"],
+            "margin": margin
+        })
+
+    return events
+
+# CLASSIFY HANDOVER
+def classify_handover(margin):
+    if np.isnan(margin):
+        return "Unknown"
+    if margin >= HYSTERESIS_DB:
+        return "Healthy"
+    if margin > 0:
+        return "Weak Margin"
+    return "Unjustified"
+
+# DETECT PING-PONG
+def detect_ping_pong(events):
+    ping_pong = []
+
+    for first, second in zip(events, events[1:]):
+        time_difference = second["time"] - first["time"]
+
+        if (second["to"] == first["from"]
+                and time_difference <= PING_PONG_WINDOW_S):
+            ping_pong.append({
+                "cellA": first["from"],
+                "cellB": first["to"],
+                "time1": first["time"],
+                "time2": second["time"],
+                "gap": time_difference
+            })
+
+    return ping_pong
+
+# CALCULATE DWELL TIME
+def calculate_dwell_time(rows):
+    dwell = OrderedDict()
+
+    for previous, current in zip(rows, rows[1:]):
+        cell = previous["cell"]
+        duration = current["t"] - previous["t"]
+        dwell[cell] = dwell.get(cell, 0) + duration
+
+    return dwell
+
+# PRINT REPORT
+def print_report(rows, events, ping_pong):
+    total_time = rows[-1]["t"] - rows[0]["t"]
+    number_of_cells = len(set(row["cell"] for row in rows))
+
+    handover_rate = (len(events) / total_time * 60) if total_time > 0 else 0
+
+    print("\n" + "=" * 70)
+    print(" HANDOVER ANALYSIS REPORT")
+    print("=" * 70)
+    print(f"Total route duration : {total_time:.0f} seconds")
+    print(f"Total samples        : {len(rows)}")
+    print(f"Different cells      : {number_of_cells}")
+    print(f"Total handovers      : {len(events)}")
+    print(f"Handover rate        : {handover_rate:.2f} per minute")
+
+    print("\nHANDOVER DETAILS")
+    print("-" * 70)
+
+    if not events:
+        print("No handover detected.")
+    else:
+        for event in events:
+            if np.isnan(event["margin"]):
+                margin_text = "N/A"
+            else:
+                margin_text = f"{event['margin']:+.0f} dB"
+
+            verdict = classify_handover(event["margin"])
+            print(
+                f"Time {event['time']:.0f}s : "
+                f"{event['from']} -> {event['to']} | "
+                f"Margin = {margin_text} | {verdict}"
+            )
+
+    print("\nDWELL TIME PER CELL")
+    print("-" * 70)
+    dwell = calculate_dwell_time(rows)
+    for cell, time in dwell.items():
+        print(f"Cell {cell} : {time:.0f} seconds")
+
+    print("\nPING-PONG ANALYSIS")
+    print("-" * 70)
+    if ping_pong:
+        print(f"Ping-pong events detected: {len(ping_pong)}")
+        for event in ping_pong:
+            print(
+                f"{event['cellA']} -> {event['cellB']} -> {event['cellA']} | "
+                f"Time gap = {event['gap']:.0f}s"
+            )
+    else:
+        print("No ping-pong handover detected.")
+
+    print("\nHYSTERESIS ANALYSIS")
+    print("-" * 70)
+    marginal = [
+        event for event in events
+        if not np.isnan(event["margin"])
+        and event["margin"] < HYSTERESIS_DB
+    ]
+    print(f"Marginal handovers : {len(marginal)} / {len(events)}")
+    print("=" * 70)
+
+# GRAPH 1: SERVING CELL VS NEIGHBOUR RSRP
+def plot_rsrp(rows, events):
+    time = [row["t"] for row in rows]
+    serving_rsrp = [row["rsrp"] for row in rows]
+    neighbour_rsrp = [row["nrsrp"] for row in rows]
+
+    plt.figure(figsize=(16, 8))
+    plt.plot(time, serving_rsrp, "o-", linewidth=3, markersize=8,
+             label="Serving Cell RSRP")
+    plt.plot(time, neighbour_rsrp, "s--", linewidth=3, markersize=8,
+             label="Neighbour Cell RSRP")
+
+    for event in events:
+        plt.axvline(event["time"], linestyle=":", linewidth=2)
+
+    plt.xlabel("Time (seconds)", fontsize=14)
+    plt.ylabel("RSRP (dBm)", fontsize=14)
+    plt.title("Serving Cell and Neighbour Cell RSRP", fontsize=18,
+              fontweight="bold")
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.grid(alpha=0.3)
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+    plt.savefig("handover_rsrp_timeline.png", dpi=200, bbox_inches="tight")
+    plt.show()
+    plt.close()
+
+# GRAPH 2: SERVING CELL TIMELINE
+def plot_cell_timeline(rows):
+    cells = list(OrderedDict.fromkeys(row["cell"] for row in rows))
+    cell_index = {cell: index for index, cell in enumerate(cells)}
+    time = [row["t"] for row in rows]
+    cell_values = [cell_index[row["cell"]] for row in rows]
+
+    plt.figure(figsize=(16, 7))
+    plt.step(time, cell_values, where="post", linewidth=4)
+    plt.scatter(time, cell_values, s=100)
+    plt.yticks(range(len(cells)), [f"Cell {cell}" for cell in cells],
+               fontsize=13)
+    plt.xticks(fontsize=12)
+    plt.xlabel("Time (seconds)", fontsize=14)
+    plt.ylabel("Serving Cell", fontsize=14)
+    plt.title("Serving Cell ID Over Time", fontsize=18, fontweight="bold")
+    plt.grid(alpha=0.3, axis="x")
+    plt.tight_layout()
+    plt.savefig("handover_cell_timeline.png", dpi=200, bbox_inches="tight")
+    plt.show()
+    plt.close()
+
+# GRAPH 3: HANDOVER MARGIN
+def plot_margins(events):
+    valid_events = [event for event in events
+                    if not np.isnan(event["margin"])]
+
+    if not valid_events:
+        print("No valid handover margins available.")
+        return
+
+    margins = [event["margin"] for event in valid_events]
+    labels = [
+        f"{event['from']} > {event['to']}\n{event['time']:.0f}s"
+        for event in valid_events
+    ]
+    x = np.arange(len(valid_events))
+
+    plt.figure(figsize=(14, 8))
+    plt.bar(x, margins, edgecolor="black", linewidth=1.5)
+    plt.axhline(HYSTERESIS_DB, linestyle="--", linewidth=3,
+                label="Hysteresis = 3 dB")
+    plt.axhline(0, linewidth=1.5)
+    plt.xticks(x, labels, fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.xlabel("Handover", fontsize=14)
+    plt.ylabel("Trigger Margin (dB)", fontsize=14)
+    plt.title("Handover Trigger Margin", fontsize=18, fontweight="bold")
+    plt.grid(axis="y", alpha=0.3)
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+    plt.savefig("handover_margins.png", dpi=200, bbox_inches="tight")
+    plt.show()
+    plt.close()
+
+# GRAPH 4: HYSTERESIS SWEEP
+def plot_hysteresis(events):
+    valid_events = [event for event in events
+                    if not np.isnan(event["margin"])]
+    if not valid_events:
+        return
+
+    hysteresis_values = np.arange(0, 9, 1)
+    blocked = []
+
+    for hysteresis in hysteresis_values:
+        count = sum(
+            1 for event in valid_events
+            if event["margin"] < hysteresis
+        )
+        blocked.append(count)
+
+    plt.figure(figsize=(14, 8))
+    plt.plot(hysteresis_values, blocked, "o-", linewidth=3, markersize=9)
+    plt.axvline(HYSTERESIS_DB, linestyle="--", linewidth=3,
+                label="Current Hysteresis = 3 dB")
+    plt.xlabel("Hysteresis Margin (dB)", fontsize=14)
+    plt.ylabel("Handovers Suppressed", fontsize=14)
+    plt.title("Effect of Hysteresis on Handovers", fontsize=18,
+              fontweight="bold")
+    plt.xticks(range(0, 9), fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.grid(alpha=0.3)
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+    plt.savefig("hysteresis_sweep.png", dpi=200, bbox_inches="tight")
+    plt.show()
+    plt.close()
+
+# RUN COMPLETE ANALYSIS
+rows = load_log(csv_file)
+events = detect_handovers(rows)
+ping_pong = detect_ping_pong(events)
+
+# PRINT REPORT
+print_report(rows, events, ping_pong)
+
+# GENERATE GRAPHS
+print("\nGenerating graphs...\n")
+plot_rsrp(rows, events)
+plot_cell_timeline(rows)
+plot_margins(events)
+plot_hysteresis(events)
+
+# FINAL OUTPUT
+print("\n" + "=" * 70)
+print(" ANALYSIS COMPLETED")
+print("=" * 70)
+print("\nCSV file:")
+print("handover_log.csv")
+print("\nGenerated graphs:")
+print("1. handover_rsrp_timeline.png")
+print("2. handover_cell_timeline.png")
+print("3. handover_margins.png")
+print("4. hysteresis_sweep.png")
+print("\nAll graphs are saved at high resolution.")
+print("=" * 70)
