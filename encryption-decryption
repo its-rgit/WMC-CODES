@@ -1,0 +1,136 @@
+import hashlib
+import secrets
+
+# Secret Key
+Ki = "ABCDEF1234567890ABCDEF1234567890"
+
+
+# ---------- A3 Algorithm ----------
+def A3(Ki, RAND):
+    return hashlib.sha256(
+        (Ki + RAND).encode()
+    ).hexdigest()[:8].upper()
+
+
+# ---------- A8 Algorithm ----------
+def A8(Ki, RAND):
+    return hashlib.sha256(
+        (Ki + RAND).encode()
+    ).hexdigest()[:16].upper()
+
+
+# ---------- A5 Encryption ----------
+def A5_encrypt(message, Kc):
+    key = bytes.fromhex(Kc)
+    data = message.encode()
+
+    encrypted = bytearray()
+
+    for i in range(len(data)):
+        encrypted.append(data[i] ^ key[i % len(key)])
+
+    return encrypted.hex().upper()
+
+
+# ---------- A5 Decryption ----------
+def A5_decrypt(encrypted, Kc):
+    key = bytes.fromhex(Kc)
+    data = bytes.fromhex(encrypted)
+
+    decrypted = bytearray()
+
+    for i in range(len(data)):
+        decrypted.append(data[i] ^ key[i % len(key)])
+
+    return decrypted.decode()
+
+
+# ==================================================
+# MAIN PROGRAM
+# ==================================================
+
+print("\n========== GSM SECURITY ==========")
+
+# Generate RAND
+RAND = secrets.token_hex(16).upper()
+
+print("\nBTS Generated RAND:", RAND)
+
+
+# ==================================================
+# 1. AUTHENTICATION USING A3
+# ==================================================
+
+print("\n========== AUTHENTICATION (A3) ==========")
+
+# SIM generates SRES
+sres = A3(Ki, RAND)
+
+# BTS generates SRES*
+sres_star = A3(Ki, RAND)
+
+print("SIM Generated SRES:", sres)
+print("BTS Generated SRES*:", sres_star)
+
+if sres == sres_star:
+
+    print("\nAUTHENTICATION SUCCESSFUL")
+
+
+    # ==============================================
+    # 2. KEY GENERATION USING A8
+    # ==============================================
+
+    print("\n========== KEY GENERATION (A8) ==========")
+
+    ms_Kc = A8(Ki, RAND)
+    bts_Kc = A8(Ki, RAND)
+
+    print("Mobile Station Kc:", ms_Kc)
+    print("BTS Generated Kc:", bts_Kc)
+
+    if ms_Kc == bts_Kc:
+
+        print("\nKc MATCHED SUCCESSFULLY")
+
+        # Display Cipher Key
+        print("\n========== CIPHER KEY ==========")
+
+        print("Cipher Key (Kc):", ms_Kc)
+
+
+        # ==========================================
+        # 3. ENCRYPTION USING A5
+        # ==========================================
+
+        print("\n========== ENCRYPTION (A5) ==========")
+
+        message = input("\nEnter Message: ")
+
+        encrypted = A5_encrypt(message, ms_Kc)
+
+        print("\nOriginal Message:", message)
+        print("Encrypted Message:", encrypted)
+
+
+        # ==========================================
+        # 4. DECRYPTION USING A5
+        # ==========================================
+
+        print("\n========== DECRYPTION (A5) ==========")
+
+        decrypted = A5_decrypt(encrypted, bts_Kc)
+
+        print("Received Encrypted Data:", encrypted)
+        print("Decrypted Message:", decrypted)
+
+        print("\nMESSAGE TRANSMITTED SUCCESSFULLY")
+
+
+    else:
+        print("\nKEY GENERATION FAILED")
+
+
+else:
+    print("\nAUTHENTICATION FAILED")
+    print("Communication not allowed.")
